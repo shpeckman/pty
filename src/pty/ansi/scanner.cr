@@ -1,5 +1,6 @@
 # src/pty/ansi/scanner.cr
 module PTY::ANSI
+  # :nodoc:
   class Scanner
     enum Kind
       Text

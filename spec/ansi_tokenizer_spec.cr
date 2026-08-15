@@ -111,4 +111,28 @@ describe PTY::ANSI::Tokenizer do
     esc.intermediate.should eq("(")
     esc.final_char.should eq('B')
   end
+
+  it "parses escapes with multiple intermediate characters" do
+    tokenizer = PTY::ANSI::Tokenizer.new
+    tokens    = Array(PTY::ANSI::Token).new
+
+    tokenizer.feed("\e $G".to_slice) { |t| tokens << t }
+    tokenizer.flush { |t| tokens << t }
+
+    esc = tokens.first.as(PTY::ANSI::Escape)
+    esc.intermediate.should eq(" $")
+    esc.final_char.should eq('G')
+  end
+
+  it "cancels an escape sequence on an invalid intermediate byte" do
+    tokenizer = PTY::ANSI::Tokenizer.new
+    tokens    = Array(PTY::ANSI::Token).new
+
+    tokenizer.feed(Bytes[0x41_u8, 0x1B_u8, 0x28_u8, 0x01_u8, 0x42_u8]) { |t| tokens << t }
+    tokenizer.flush { |t| tokens << t }
+
+    tokens.size.should eq(2)
+    tokens[0].as(PTY::ANSI::Text).data.should eq("A")
+    tokens[1].as(PTY::ANSI::Text).data.should eq("B")
+  end
 end

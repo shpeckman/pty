@@ -35,6 +35,18 @@ describe PTY::ANSI::Filter do
     String.new(result).should eq("DesignateASCII")
   end
 
+  it "strips escape sequences with multiple intermediate bytes" do
+    filter = PTY::ANSI::Filter.new
+    result = filter.call("A\e $GB".to_slice)
+    String.new(result).should eq("AB")
+  end
+
+  it "cancels an escape sequence on an invalid intermediate byte" do
+    filter = PTY::ANSI::Filter.new
+    result = filter.call(Bytes[0x41_u8, 0x1B_u8, 0x28_u8, 0x01_u8, 0x42_u8])
+    String.new(result).should eq("AB")
+  end
+
   it "strips OSC sequences terminated by BEL" do
     filter = PTY::ANSI::Filter.new
     result = filter.call("Pre\e]0;Terminal Title\x07Post".to_slice)

@@ -12,6 +12,34 @@ module PTY
     end
   end
 
+  @@winch_mutex    = Mutex.new
+  @@winch_handlers = {} of UInt64 => ->
+  @@winch_next_id  = 0_u64
+
+  # :nodoc:
+  def self.register_winch(&handler : ->) : UInt64
+    @@winch_mutex.synchronize do
+      id = (@@winch_next_id += 1)
+      @@winch_handlers[id] = handler
+      Signal::WINCH.trap { dispatch_winch } if @@winch_handlers.size == 1
+      id
+    end
+  end
+
+  # :nodoc:
+  def self.unregister_winch(id : UInt64) : Nil
+    @@winch_mutex.synchronize do
+      @@winch_handlers.delete(id)
+      Signal::WINCH.reset if @@winch_handlers.empty?
+    end
+  end
+
+  # :nodoc:
+  def self.dispatch_winch : Nil
+    handlers = @@winch_mutex.synchronize { @@winch_handlers.values }
+    handlers.each(&.call)
+  end
+
   def self.window_size(io : IO::FileDescriptor) : WinSize
     window_size(io.fd)
   end
@@ -88,7 +116,7 @@ module PTY
       end
 
       master_fd = uninitialized LibC::Int
-      slave_fd  = uninitialized LibC::Int
+      slave_fd = uninitialized LibC::Int
 
       ws = LibC::Winsize.new
       ws.ws_col = cols.to_u16
@@ -245,9 +273,11 @@ module PTY
                   on_output : Filter? = nil,
                   raw : Bool = true,
                   forward_winch : Bool = true) : Process::Status
+      winch : UInt64? = nil
+
       if forward_winch
         sync_winsize(output)
-        Signal::WINCH.trap { sync_winsize(output) }
+        winch = PTY.register_winch { sync_winsize(output) }
       end
 
       begin
@@ -257,7 +287,7 @@ module PTY
           pump(input, output, on_input, on_output)
         end
       ensure
-        Signal::WINCH.reset if forward_winch
+        PTY.unregister_winch(winch) if winch
       end
     end
 
