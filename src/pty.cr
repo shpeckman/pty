@@ -1,3 +1,9 @@
-module Pty
-  VERSION = {{ `shards version "#{__DIR__}"`.chomp.stringify }}
-end
+# src/pty.cr
+require "./pty/win_size"
+require "./pty/filter"
+require "./pty/utf8_filter"
+require "./pty/ansi"
+require "./pty/ansi/scanner"
+require "./pty/ansi/filter"
+require "./pty/ansi/tokenizer"
+require "./pty/session"
