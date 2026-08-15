@@ -75,6 +75,7 @@ module PTY
     getter process : Process
 
     @status : Process::Status?
+    @draining = false
 
     def self.new(command : String, args : Enumerable(String)? = nil,
                  env : Process::Env = nil, clear_env : Bool = false,
@@ -87,7 +88,7 @@ module PTY
       end
 
       master_fd = uninitialized LibC::Int
-      slave_fd = uninitialized LibC::Int
+      slave_fd  = uninitialized LibC::Int
 
       ws = LibC::Winsize.new
       ws.ws_col = cols.to_u16
@@ -179,39 +180,49 @@ module PTY
       flush
     end
 
-    def expect(pattern : String | Regex, timeout : Time::Span? = nil) : String?
-      start_time       = Time.instant
-      original_timeout = self.read_timeout
+    def expect(pattern : String, timeout : Time::Span? = nil) : String?
+      needle = pattern.to_slice
+      size   = needle.size
 
-      buffer = IO::Memory.new
+      scan(pattern, timeout) do |slice|
+        slice.size >= size && slice[slice.size - size, size] == needle
+      end
+    end
+
+    def expect(pattern : Regex, timeout : Time::Span? = nil) : String?
+      scan(pattern, timeout) do |slice|
+        !pattern.match(String.new(slice)).nil?
+      end
+    end
+
+    private def scan(pattern, timeout : Time::Span?, & : Bytes -> Bool) : String?
+      deadline = timeout ? Time.instant + timeout : nil
+      original = self.read_timeout
+      buffer   = IO::Memory.new(256)
+
       begin
         loop do
-          if timeout
-            elapsed   = Time.instant - start_time
-            remaining = timeout - elapsed
+          if deadline
+            remaining = deadline - Time.instant
             if remaining <= Time::Span.zero
               raise IO::TimeoutError.new("expect absolute timeout reached")
             end
             self.read_timeout = remaining
           end
 
-          char = self.read_char
+          char = read_char
           break unless char
           buffer << char
 
-          str = buffer.to_s
-          case pattern
-          when String
-            return str if str.ends_with?(pattern)
-          when Regex
-            return str if pattern.match(str)
-          end
+          slice = buffer.to_slice
+          return String.new(slice) if yield slice
         end
         nil
-      rescue ex : IO::TimeoutError
-        raise ExpectTimeoutError.new("Timeout waiting for pattern: #{pattern.inspect}", buffer.to_s)
+      rescue IO::TimeoutError
+        raise ExpectTimeoutError.new("Timeout waiting for pattern: #{pattern.inspect}",
+          String.new(buffer.to_slice))
       ensure
-        self.read_timeout = original_timeout
+        self.read_timeout = original
       end
     end
 
@@ -263,7 +274,8 @@ module PTY
 
     private def proxy(input : IO, output : IO,
                       on_input : Filter?, on_output : Filter?) : Nil
-      done = Channel(Exception?).new
+      done      = Channel(Exception?).new(2)
+      @draining = false
 
       spawn do
         error = nil
@@ -272,12 +284,13 @@ module PTY
         rescue ex
           error = ex
         ensure
+          @draining = true
           done.send(error)
         end
       end
 
       spawn do
-        copy(input, self, on_input)
+        copy_input(input, on_input)
       rescue IO::Error
       rescue ex
         done.send(ex)
@@ -294,6 +307,16 @@ module PTY
         emit(sink, filter ? filter.call(buffer[0, count]) : buffer[0, count])
       end
       emit(sink, filter.finish) if filter
+    end
+
+    private def copy_input(source : IO, filter : Filter?) : Nil
+      buffer = Bytes.new(8192)
+      until @draining
+        count = source.read(buffer)
+        break if count == 0 || @draining
+        emit(self, filter ? filter.call(buffer[0, count]) : buffer[0, count])
+      end
+      emit(self, filter.finish) if filter && !@draining
     end
 
     private def emit(sink : IO, bytes : Bytes) : Nil

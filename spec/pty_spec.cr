@@ -188,6 +188,71 @@ describe PTY::Session do
       end
       pty.close
     end
+
+    it "matches a pattern after a large preamble" do
+      pty    = PTY.spawn("sh", ["-c", "printf '%5000s' ''; echo MARKER"])
+      result = pty.expect("MARKER")
+      result.should_not be_nil
+      result.not_nil!.bytesize.should be > 5000
+      result.not_nil!.ends_with?("MARKER").should be_true
+      pty.wait
+      pty.close
+    end
+
+    it "matches a pattern containing multibyte characters" do
+      pty    = PTY.spawn("echo", ["une café noire"])
+      result = pty.expect("café")
+      result.should eq("une café")
+      pty.close
+    end
+
+    it "matches a single-character pattern" do
+      pty    = PTY.spawn("echo", ["abc"])
+      result = pty.expect("b")
+      result.should eq("ab")
+      pty.close
+    end
+
+    it "does not match a pattern longer than the available output" do
+      pty    = PTY.spawn("echo", ["hi"])
+      result = pty.expect("hi there friend")
+      result.should be_nil
+      pty.close
+    end
+
+    it "stops at the earliest regex match" do
+      pty    = PTY.spawn("echo", ["aXbXc"])
+      result = pty.expect(/X/)
+      result.should eq("aX")
+      pty.close
+    end
+
+    it "matches an anchored regex without consuming trailing output" do
+      pty    = PTY.spawn("echo", ["prefix-42-suffix"])
+      result = pty.expect(/\d\d/)
+      result.should eq("prefix-42")
+      pty.close
+    end
+
+    it "restores the original read timeout after matching" do
+      pty = PTY.spawn("echo", ["hello world"])
+      pty.read_timeout = 30.seconds
+      pty.expect("hello", 5.seconds)
+      pty.read_timeout.should eq(30.seconds)
+      pty.close
+    end
+
+    it "restores the original read timeout after a timeout" do
+      pty = PTY.spawn("sh", ["-c", "echo start; sleep 2"])
+      pty.read_timeout = 30.seconds
+      expect_raises(PTY::ExpectTimeoutError) do
+        pty.expect("never", 0.3.seconds)
+      end
+      pty.read_timeout.should eq(30.seconds)
+      pty.kill
+      pty.wait
+      pty.close
+    end
   end
 
   describe "#send_line" do
@@ -319,6 +384,35 @@ private def with_intercept(command, args = nil, *,
   yield captured, status
 end
 
+private def intercept_within(span : Time::Span, command, args = nil, &) : Process::Status?
+  in_r, in_w = IO.pipe
+  out_r, out_w = IO.pipe
+  pty  = PTY.spawn(command, args)
+  done = Channel(Process::Status).new(1)
+
+  spawn { out_r.gets_to_end }
+  spawn do
+    done.send(pty.intercept(input: in_r, output: out_w,
+      raw: false, forward_winch: false))
+  end
+
+  yield in_w
+
+  status = nil
+  select
+  when result = done.receive
+    status = result
+  when timeout(span)
+  end
+
+  pty.close
+  in_w.close rescue nil
+  in_r.close rescue nil
+  out_w.close rescue nil
+
+  status
+end
+
 describe "PTY::Session#intercept" do
   it "transforms output through a filter" do
     with_intercept("echo", ["hello"], on_output: UpcaseFilter.new) do |captured, _|
@@ -352,6 +446,29 @@ describe "PTY::Session#intercept" do
       captured.strip.should eq("passthrough")
       status.try(&.success?).should be_true
     end
+  end
+
+  it "returns when the child exits while input is still open" do
+    status = intercept_within(5.seconds, "echo", ["done"]) { }
+    status.should_not be_nil
+    status.not_nil!.success?.should be_true
+  end
+
+  it "returns when the child exits after input has been written" do
+    status = intercept_within(5.seconds, "sh", ["-c", "sleep 0.3; exit 7"]) do |input|
+      input.print("ignored\n")
+      input.flush
+    end
+    status.should_not be_nil
+    status.not_nil!.exit_code.should eq(7)
+  end
+
+  it "returns when the input side fails while the child is running" do
+    status = intercept_within(5.seconds, "sh", ["-c", "sleep 0.3; exit 0"]) do |input|
+      input.close
+    end
+    status.should_not be_nil
+    status.not_nil!.success?.should be_true
   end
 end
 
