@@ -169,6 +169,16 @@ describe PTY::Session do
       pty.close
     end
 
+    it "matches using a custom block-based state machine" do
+      pty    = PTY.spawn("echo", ["hello custom FSM block"])
+      target = "custom".to_slice
+      result = pty.expect(1.second) do |slice|
+        slice.size >= target.size && slice[slice.size - target.size, target.size] == target
+      end
+      result.should eq("hello custom")
+      pty.close
+    end
+
     it "returns nil on EOF if pattern is not found" do
       pty    = PTY.spawn("echo", ["hello world"])
       result = pty.expect("missing")
@@ -186,6 +196,16 @@ describe PTY::Session do
           raise ex
         end
       end
+      pty.close
+    end
+
+    it "raises ExpectTimeoutError with correct message for block-based expects" do
+      pty = PTY.spawn("sh", ["-c", "echo start; sleep 2"])
+      expect_raises(PTY::ExpectTimeoutError, "Timeout waiting for custom block") do
+        pty.expect(0.3.seconds) { false }
+      end
+      pty.kill
+      pty.wait
       pty.close
     end
 

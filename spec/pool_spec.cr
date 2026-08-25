@@ -44,6 +44,22 @@ describe PTY::Pool do
     pool.close_all
   end
 
+  it "matches expect_all using a block" do
+    pool = PTY::Pool.new
+    pool.spawn("node1", "echo", ["ready: node1"])
+    pool.spawn("node2", "echo", ["ready: node2"])
+
+    target = "ready: ".to_slice
+    results = pool.expect_all do |slice|
+      slice.size >= target.size && slice[slice.size - target.size, target.size] == target
+    end
+    results["node1"].should eq("ready: ")
+    results["node2"].should eq("ready: ")
+
+    pool.wait_all
+    pool.close_all
+  end
+
   it "handles expect_all timeouts independently without crashing" do
     pool = PTY::Pool.new
     pool.spawn("fast", "echo", ["finished"])

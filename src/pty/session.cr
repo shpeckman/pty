@@ -219,6 +219,12 @@ module PTY
       end
     end
 
+    def expect(timeout : Time::Span? = nil, & : Bytes -> Bool) : String?
+      scan(nil, timeout) do |slice|
+        yield slice
+      end
+    end
+
     private def scan(pattern, timeout : Time::Span?, & : Bytes -> Bool) : String?
       deadline = timeout ? Time.instant + timeout : nil
       original = self.read_timeout
@@ -243,7 +249,8 @@ module PTY
         end
         nil
       rescue IO::TimeoutError
-        raise ExpectTimeoutError.new("Timeout waiting for pattern: #{pattern.inspect}",
+        msg = pattern.nil? ? "custom block" : "pattern: #{pattern.inspect}"
+        raise ExpectTimeoutError.new("Timeout waiting for #{msg}",
           String.new(buffer.to_slice))
       ensure
         self.read_timeout = original

@@ -49,6 +49,30 @@ module PTY
       results
     end
 
+    def expect_all(timeout : Time::Span? = nil, &block : Bytes -> Bool) : Hash(String, String?)
+      results = {} of String => String?
+      channel = Channel({String, String?}).new
+
+      @sessions.each do |name, session|
+        ::spawn do
+          begin
+            channel.send({name, session.expect(timeout, &block)})
+          rescue IO::TimeoutError
+            channel.send({name, nil})
+          rescue IO::Error
+            channel.send({name, nil})
+          end
+        end
+      end
+
+      @sessions.size.times do
+        name, res = channel.receive
+        results[name] = res
+      end
+
+      results
+    end
+
     def wait_all : Hash(String, Process::Status)
       statuses = {} of String => Process::Status
       @sessions.each do |name, session|
