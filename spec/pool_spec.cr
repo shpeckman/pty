@@ -71,7 +71,6 @@ describe PTY::Pool do
 
     results["slow"].should be_nil
 
-    # Clean up the slow process early
     pool.close_all
   end
 

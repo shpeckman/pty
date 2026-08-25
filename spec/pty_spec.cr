@@ -172,8 +172,8 @@ describe PTY::Session do
     pty.expect("OUT:hello logger")
 
     logged_output = log.to_s
-    logged_output.should contain("hello logger\n")   # from send_line
-    logged_output.should contain("OUT:hello logger") # from output reading
+    logged_output.should contain("hello logger\n")
+    logged_output.should contain("OUT:hello logger")
 
     pty.wait
     pty.close
@@ -199,9 +199,8 @@ describe PTY::Expect do
   end
 
   it "matches a regex pattern and returns MatchData" do
-    pty = PTY.spawn("echo", ["temperature: 42 degrees"])
-    exp = PTY::Expect.new(pty)
-    # Require the word 'degrees' to ensure we read past the entire number
+    pty   = PTY.spawn("echo", ["temperature: 42 degrees"])
+    exp   = PTY::Expect.new(pty)
     match = exp.expect(/temperature: (\d+) degrees/)
 
     match.should_not be_nil

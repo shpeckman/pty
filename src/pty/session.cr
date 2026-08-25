@@ -186,7 +186,6 @@ class PTY::Session < IO::FileDescriptor
       kill
       wait
     end
-    # Break the circular reference for the GC
     @expect = nil
   end
 
