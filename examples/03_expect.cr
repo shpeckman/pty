@@ -1,4 +1,4 @@
-# examples/08_expect.cr
+# examples/03_expect.cr
 require "../src/pty"
 
 puts "== Expect API Example =="

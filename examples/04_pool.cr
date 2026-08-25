@@ -1,4 +1,4 @@
-# examples/09_pool.cr
+# examples/04_pool.cr
 require "../src/pty"
 
 puts "== Multi-PTY Multiplexing Example =="

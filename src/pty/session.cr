@@ -1,6 +1,5 @@
 # src/pty/session.cr
 require "./lib_c"
-require "./filter"
 require "./win_size"
 
 module PTY
@@ -16,7 +15,6 @@ module PTY
   @@winch_handlers = {} of UInt64 => ->
   @@winch_next_id  = 0_u64
 
-  # :nodoc:
   def self.register_winch(&handler : ->) : UInt64
     @@winch_mutex.synchronize do
       id = (@@winch_next_id += 1)
@@ -26,7 +24,6 @@ module PTY
     end
   end
 
-  # :nodoc:
   def self.unregister_winch(id : UInt64) : Nil
     @@winch_mutex.synchronize do
       @@winch_handlers.delete(id)
@@ -34,7 +31,6 @@ module PTY
     end
   end
 
-  # :nodoc:
   def self.dispatch_winch : Nil
     handlers = @@winch_mutex.synchronize { @@winch_handlers.values }
     handlers.each(&.call)
@@ -269,8 +265,6 @@ module PTY
 
     def intercept(input : IO::FileDescriptor = STDIN,
                   output : IO::FileDescriptor = STDOUT,
-                  on_input : Filter? = nil,
-                  on_output : Filter? = nil,
                   raw : Bool = true,
                   forward_winch : Bool = true) : Process::Status
       winch : UInt64? = nil
@@ -282,18 +276,17 @@ module PTY
 
       begin
         if raw
-          PTY.raw(input) { pump(input, output, on_input, on_output) }
+          PTY.raw(input) { pump(input, output) }
         else
-          pump(input, output, on_input, on_output)
+          pump(input, output)
         end
       ensure
         PTY.unregister_winch(winch) if winch
       end
     end
 
-    def pump(input : IO = STDIN, output : IO = STDOUT,
-             on_input : Filter? = nil, on_output : Filter? = nil) : Process::Status
-      proxy(input, output, on_input, on_output)
+    def pump(input : IO = STDIN, output : IO = STDOUT) : Process::Status
+      proxy(input, output)
       wait
     end
 
@@ -302,15 +295,14 @@ module PTY
     rescue IO::Error
     end
 
-    private def proxy(input : IO, output : IO,
-                      on_input : Filter?, on_output : Filter?) : Nil
+    private def proxy(input : IO, output : IO) : Nil
       done      = Channel(Exception?).new(2)
       @draining = false
 
       spawn do
         error = nil
         begin
-          copy(self, output, on_output)
+          copy(self, output)
         rescue ex
           error = ex
         ensure
@@ -320,7 +312,7 @@ module PTY
       end
 
       spawn do
-        copy_input(input, on_input)
+        copy_input(input)
       rescue IO::Error
       rescue ex
         done.send(ex)
@@ -331,22 +323,20 @@ module PTY
       end
     end
 
-    private def copy(source : IO, sink : IO, filter : Filter?) : Nil
+    private def copy(source : IO, sink : IO) : Nil
       buffer = Bytes.new(8192)
       while (count = source.read(buffer)) > 0
-        emit(sink, filter ? filter.call(buffer[0, count]) : buffer[0, count])
+        emit(sink, buffer[0, count])
       end
-      emit(sink, filter.finish) if filter
     end
 
-    private def copy_input(source : IO, filter : Filter?) : Nil
+    private def copy_input(source : IO) : Nil
       buffer = Bytes.new(8192)
       until @draining
         count = source.read(buffer)
         break if count == 0 || @draining
-        emit(self, filter ? filter.call(buffer[0, count]) : buffer[0, count])
+        emit(self, buffer[0, count])
       end
-      emit(self, filter.finish) if filter && !@draining
     end
 
     private def emit(sink : IO, bytes : Bytes) : Nil

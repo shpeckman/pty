@@ -321,43 +321,7 @@ describe "PTY::Session#resize" do
   end
 end
 
-private class UpcaseFilter < PTY::Filter
-  def call(chunk : Bytes) : Bytes
-    String.new(chunk).upcase.to_slice
-  end
-end
-
-private class DropFilter < PTY::Filter
-  def call(chunk : Bytes) : Bytes
-    Bytes.empty
-  end
-end
-
-private class PrefixLineFilter < PTY::LineFilter
-  def on_line(line : Bytes) : Bytes
-    ("> " + String.new(line)).to_slice
-  end
-end
-
-private class Collector < PTY::Filter
-  getter data     = IO::Memory.new
-  getter finished = false
-
-  def call(chunk : Bytes) : Bytes
-    @data.write(chunk)
-    chunk
-  end
-
-  def finish : Bytes
-    @finished = true
-    Bytes.empty
-  end
-end
-
-private def with_intercept(command, args = nil, *,
-                           on_input : PTY::Filter? = nil,
-                           on_output : PTY::Filter? = nil,
-                           feed : String? = nil, eof : Bool = false, &)
+private def with_intercept(command, args = nil, *, feed : String? = nil, eof : Bool = false, &)
   in_r, in_w = IO.pipe
   out_r, out_w = IO.pipe
   pty      = PTY.spawn(command, args)
@@ -365,9 +329,7 @@ private def with_intercept(command, args = nil, *,
   spawn { captured = out_r.gets_to_end }
   status = nil
   spawn do
-    status = pty.intercept(input: in_r, output: out_w,
-      on_input: on_input, on_output: on_output,
-      raw: false, forward_winch: false)
+    status = pty.intercept(input: in_r, output: out_w, raw: false, forward_winch: false)
     out_w.close
   end
   if feed
@@ -392,8 +354,7 @@ private def intercept_within(span : Time::Span, command, args = nil, &) : Proces
 
   spawn { out_r.gets_to_end }
   spawn do
-    done.send(pty.intercept(input: in_r, output: out_w,
-      raw: false, forward_winch: false))
+    done.send(pty.intercept(input: in_r, output: out_w, raw: false, forward_winch: false))
   end
 
   yield in_w
@@ -414,34 +375,7 @@ private def intercept_within(span : Time::Span, command, args = nil, &) : Proces
 end
 
 describe "PTY::Session#intercept" do
-  it "transforms output through a filter" do
-    with_intercept("echo", ["hello"], on_output: UpcaseFilter.new) do |captured, _|
-      captured.strip.should eq("HELLO")
-    end
-  end
-
-  it "suppresses output when the filter returns empty bytes" do
-    with_intercept("echo", ["hello"], on_output: DropFilter.new) do |captured, _|
-      captured.strip.should be_empty
-    end
-  end
-
-  it "calls finish at end of stream" do
-    collector = Collector.new
-    with_intercept("printf", ["a\\nb\\nc\\n"], on_output: collector) do |_, _|
-    end
-    collector.finished.should be_true
-    collector.data.to_s.should contain("a")
-    collector.data.to_s.should contain("c")
-  end
-
-  it "transforms input through a filter" do
-    with_intercept("cat", on_input: UpcaseFilter.new, feed: "abc\n", eof: true) do |captured, _|
-      captured.should contain("ABC")
-    end
-  end
-
-  it "passes through unchanged with nil filters" do
+  it "passes through unchanged" do
     with_intercept("echo", ["passthrough"]) do |captured, status|
       captured.strip.should eq("passthrough")
       status.try(&.success?).should be_true
@@ -472,78 +406,6 @@ describe "PTY::Session#intercept" do
   end
 end
 
-describe PTY::TapFilter do
-  it "observes chunks without modifying the stream" do
-    seen = IO::Memory.new
-    tap  = PTY::TapFilter.new { |chunk| seen.write(chunk) }
-    with_intercept("echo", ["tapped"], on_output: tap) do |captured, _|
-      captured.strip.should eq("tapped")
-    end
-    seen.to_s.should contain("tapped")
-  end
-end
-
-describe PTY::LineFilter do
-  it "emits complete lines and buffers the incomplete tail" do
-    lf = PTY::LineFilter.new
-    io = IO::Memory.new
-    io.write(lf.call("hel".to_slice))
-    io.write(lf.call("lo\nwor".to_slice))
-    io.write(lf.finish)
-    io.to_s.should eq("hello\nwor")
-  end
-
-  it "passes multiple lines through unchanged" do
-    lf = PTY::LineFilter.new
-    io = IO::Memory.new
-    io.write(lf.call("a\nb\nc\n".to_slice))
-    io.write(lf.finish)
-    io.to_s.should eq("a\nb\nc\n")
-  end
-
-  it "transforms each line" do
-    lf = PTY::LineFilter.new { |line| String.new(line).upcase.to_slice }
-    io = IO::Memory.new
-    io.write(lf.call("foo\nbar".to_slice))
-    io.write(lf.finish)
-    io.to_s.should eq("FOO\nBAR")
-  end
-
-  it "suppresses lines that return empty bytes" do
-    lf = PTY::LineFilter.new do |line|
-      String.new(line).starts_with?("secret") ? Bytes.empty : line
-    end
-    io = IO::Memory.new
-    io.write(lf.call("keep\nsecret123\nkeep2\n".to_slice))
-    io.write(lf.finish)
-    io.to_s.should eq("keep\nkeep2\n")
-  end
-
-  it "reassembles lines fed one byte at a time" do
-    lf = PTY::LineFilter.new
-    io = IO::Memory.new
-    "line1\nline2\n".each_byte { |b| io.write(lf.call(Bytes[b])) }
-    io.write(lf.finish)
-    io.to_s.should eq("line1\nline2\n")
-  end
-
-  it "supports subclasses overriding on_line" do
-    filter = PrefixLineFilter.new
-    io     = IO::Memory.new
-    io.write(filter.call("x\ny".to_slice))
-    io.write(filter.finish)
-    io.to_s.should eq("> x\n> y")
-  end
-
-  it "works as an output filter through intercept" do
-    upcase = PTY::LineFilter.new { |line| String.new(line).upcase.to_slice }
-    with_intercept("printf", ["one\\ntwo\\n"], on_output: upcase) do |captured, _|
-      captured.should contain("ONE")
-      captured.should contain("TWO")
-    end
-  end
-end
-
 describe "PTY::Session#pump" do
   it "captures child output into an in-memory IO" do
     buffer = IO::Memory.new
@@ -553,16 +415,6 @@ describe "PTY::Session#pump" do
     buffer.to_s.should contain("a")
     buffer.to_s.should contain("c")
     status.success?.should be_true
-  end
-
-  it "applies an output filter while capturing to memory" do
-    buffer = IO::Memory.new
-    pty    = PTY.spawn("printf", ["one\\ntwo\\n"])
-    upcase = PTY::LineFilter.new { |line| String.new(line).upcase.to_slice }
-    pty.pump(output: buffer, on_output: upcase)
-    pty.close
-    buffer.to_s.should contain("ONE")
-    buffer.to_s.should contain("TWO")
   end
 
   it "pumps input from an in-memory IO through the child" do
