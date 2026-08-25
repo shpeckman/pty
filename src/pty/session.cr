@@ -3,39 +3,6 @@ require "./lib_c"
 require "./win_size"
 
 module PTY
-  class ExpectTimeoutError < IO::TimeoutError
-    getter buffer : String
-
-    def initialize(message : String, @buffer : String)
-      super(message)
-    end
-  end
-
-  @@winch_mutex    = Mutex.new
-  @@winch_handlers = {} of UInt64 => ->
-  @@winch_next_id  = 0_u64
-
-  def self.register_winch(&handler : ->) : UInt64
-    @@winch_mutex.synchronize do
-      id = (@@winch_next_id += 1)
-      @@winch_handlers[id] = handler
-      Signal::WINCH.trap { dispatch_winch } if @@winch_handlers.size == 1
-      id
-    end
-  end
-
-  def self.unregister_winch(id : UInt64) : Nil
-    @@winch_mutex.synchronize do
-      @@winch_handlers.delete(id)
-      Signal::WINCH.reset if @@winch_handlers.empty?
-    end
-  end
-
-  def self.dispatch_winch : Nil
-    handlers = @@winch_mutex.synchronize { @@winch_handlers.values }
-    handlers.each(&.call)
-  end
-
   def self.window_size(io : IO::FileDescriptor) : WinSize
     window_size(io.fd)
   end
@@ -99,7 +66,6 @@ module PTY
     getter process : Process
 
     @status : Process::Status?
-    @draining = false
 
     def self.new(command : String, args : Enumerable(String)? = nil,
                  env : Process::Env = nil, clear_env : Bool = false,
@@ -202,154 +168,6 @@ module PTY
         write_byte(veof) unless veof == 0
       end
       flush
-    end
-
-    def expect(pattern : String, timeout : Time::Span? = nil) : String?
-      needle = pattern.to_slice
-      size   = needle.size
-
-      scan(pattern, timeout) do |slice|
-        slice.size >= size && slice[slice.size - size, size] == needle
-      end
-    end
-
-    def expect(pattern : Regex, timeout : Time::Span? = nil) : String?
-      scan(pattern, timeout) do |slice|
-        !pattern.match(String.new(slice)).nil?
-      end
-    end
-
-    def expect(timeout : Time::Span? = nil, & : Bytes -> Bool) : String?
-      scan(nil, timeout) do |slice|
-        yield slice
-      end
-    end
-
-    private def scan(pattern, timeout : Time::Span?, & : Bytes -> Bool) : String?
-      deadline = timeout ? Time.instant + timeout : nil
-      original = self.read_timeout
-      buffer   = IO::Memory.new(256)
-
-      begin
-        loop do
-          if deadline
-            remaining = deadline - Time.instant
-            if remaining <= Time::Span.zero
-              raise IO::TimeoutError.new("expect absolute timeout reached")
-            end
-            self.read_timeout = remaining
-          end
-
-          char = read_char
-          break unless char
-          buffer << char
-
-          slice = buffer.to_slice
-          return String.new(slice) if yield slice
-        end
-        nil
-      rescue IO::TimeoutError
-        msg = pattern.nil? ? "custom block" : "pattern: #{pattern.inspect}"
-        raise ExpectTimeoutError.new("Timeout waiting for #{msg}",
-          String.new(buffer.to_slice))
-      ensure
-        self.read_timeout = original
-      end
-    end
-
-    def send_line(line : String) : Nil
-      print(line)
-      print('\n')
-      flush
-    end
-
-    def attach(input : IO::FileDescriptor = STDIN,
-               output : IO::FileDescriptor = STDOUT,
-               raw : Bool = true,
-               forward_winch : Bool = true) : Process::Status
-      intercept(input: input, output: output, raw: raw, forward_winch: forward_winch)
-    end
-
-    def intercept(input : IO::FileDescriptor = STDIN,
-                  output : IO::FileDescriptor = STDOUT,
-                  raw : Bool = true,
-                  forward_winch : Bool = true) : Process::Status
-      winch : UInt64? = nil
-
-      if forward_winch
-        sync_winsize(output)
-        winch = PTY.register_winch { sync_winsize(output) }
-      end
-
-      begin
-        if raw
-          PTY.raw(input) { pump(input, output) }
-        else
-          pump(input, output)
-        end
-      ensure
-        PTY.unregister_winch(winch) if winch
-      end
-    end
-
-    def pump(input : IO = STDIN, output : IO = STDOUT) : Process::Status
-      proxy(input, output)
-      wait
-    end
-
-    private def sync_winsize(output : IO::FileDescriptor) : Nil
-      resize(PTY.window_size(output))
-    rescue IO::Error
-    end
-
-    private def proxy(input : IO, output : IO) : Nil
-      done      = Channel(Exception?).new(2)
-      @draining = false
-
-      spawn do
-        error = nil
-        begin
-          copy(self, output)
-        rescue ex
-          error = ex
-        ensure
-          @draining = true
-          done.send(error)
-        end
-      end
-
-      spawn do
-        copy_input(input)
-      rescue IO::Error
-      rescue ex
-        done.send(ex)
-      end
-
-      if error = done.receive
-        raise error
-      end
-    end
-
-    private def copy(source : IO, sink : IO) : Nil
-      buffer = Bytes.new(8192)
-      while (count = source.read(buffer)) > 0
-        emit(sink, buffer[0, count])
-      end
-    end
-
-    private def copy_input(source : IO) : Nil
-      buffer = Bytes.new(8192)
-      until @draining
-        count = source.read(buffer)
-        break if count == 0 || @draining
-        emit(self, buffer[0, count])
-      end
-    end
-
-    private def emit(sink : IO, bytes : Bytes) : Nil
-      return if bytes.empty?
-      sink.write(bytes)
-      sink.flush
     end
 
     def kill(sig : Signal = Signal::TERM) : Nil

@@ -153,136 +153,149 @@ describe PTY::Session do
     pty.wait
     pty.close
   end
+end
 
-  describe "#expect" do
-    it "matches a string pattern" do
-      pty    = PTY.spawn("echo", ["hello expect world"])
-      result = pty.expect("expect")
-      result.should eq("hello expect")
-      pty.close
-    end
-
-    it "matches a regex pattern" do
-      pty    = PTY.spawn("echo", ["hello 123 world"])
-      result = pty.expect(/123/)
-      result.should eq("hello 123")
-      pty.close
-    end
-
-    it "matches using a custom block-based state machine" do
-      pty    = PTY.spawn("echo", ["hello custom FSM block"])
-      target = "custom".to_slice
-      result = pty.expect(1.second) do |slice|
-        slice.size >= target.size && slice[slice.size - target.size, target.size] == target
-      end
-      result.should eq("hello custom")
-      pty.close
-    end
-
-    it "returns nil on EOF if pattern is not found" do
-      pty    = PTY.spawn("echo", ["hello world"])
-      result = pty.expect("missing")
-      result.should be_nil
-      pty.close
-    end
-
-    it "raises ExpectTimeoutError on timeout and provides partial buffer" do
-      pty = PTY.spawn("sh", ["-c", "echo 'starting'; sleep 2; echo 'ending'"])
-      expect_raises(PTY::ExpectTimeoutError, "Timeout waiting for pattern") do
-        begin
-          pty.expect("ending", 0.5.seconds)
-        rescue ex : PTY::ExpectTimeoutError
-          ex.buffer.should contain("starting")
-          raise ex
-        end
-      end
-      pty.close
-    end
-
-    it "raises ExpectTimeoutError with correct message for block-based expects" do
-      pty = PTY.spawn("sh", ["-c", "echo start; sleep 2"])
-      expect_raises(PTY::ExpectTimeoutError, "Timeout waiting for custom block") do
-        pty.expect(0.3.seconds) { false }
-      end
-      pty.kill
-      pty.wait
-      pty.close
-    end
-
-    it "matches a pattern after a large preamble" do
-      pty    = PTY.spawn("sh", ["-c", "printf '%5000s' ''; echo MARKER"])
-      result = pty.expect("MARKER")
-      result.should_not be_nil
-      result.not_nil!.bytesize.should be > 5000
-      result.not_nil!.ends_with?("MARKER").should be_true
-      pty.wait
-      pty.close
-    end
-
-    it "matches a pattern containing multibyte characters" do
-      pty    = PTY.spawn("echo", ["une café noire"])
-      result = pty.expect("café")
-      result.should eq("une café")
-      pty.close
-    end
-
-    it "matches a single-character pattern" do
-      pty    = PTY.spawn("echo", ["abc"])
-      result = pty.expect("b")
-      result.should eq("ab")
-      pty.close
-    end
-
-    it "does not match a pattern longer than the available output" do
-      pty    = PTY.spawn("echo", ["hi"])
-      result = pty.expect("hi there friend")
-      result.should be_nil
-      pty.close
-    end
-
-    it "stops at the earliest regex match" do
-      pty    = PTY.spawn("echo", ["aXbXc"])
-      result = pty.expect(/X/)
-      result.should eq("aX")
-      pty.close
-    end
-
-    it "matches an anchored regex without consuming trailing output" do
-      pty    = PTY.spawn("echo", ["prefix-42-suffix"])
-      result = pty.expect(/\d\d/)
-      result.should eq("prefix-42")
-      pty.close
-    end
-
-    it "restores the original read timeout after matching" do
-      pty = PTY.spawn("echo", ["hello world"])
-      pty.read_timeout = 30.seconds
-      pty.expect("hello", 5.seconds)
-      pty.read_timeout.should eq(30.seconds)
-      pty.close
-    end
-
-    it "restores the original read timeout after a timeout" do
-      pty = PTY.spawn("sh", ["-c", "echo start; sleep 2"])
-      pty.read_timeout = 30.seconds
-      expect_raises(PTY::ExpectTimeoutError) do
-        pty.expect("never", 0.3.seconds)
-      end
-      pty.read_timeout.should eq(30.seconds)
-      pty.kill
-      pty.wait
-      pty.close
-    end
+describe PTY::Expect do
+  it "matches a string pattern" do
+    pty    = PTY.spawn("echo", ["hello expect world"])
+    exp    = PTY::Expect.new(pty)
+    result = exp.expect("expect")
+    result.should eq("hello expect")
+    pty.close
   end
 
-  describe "#send_line" do
-    it "sends a line with a newline" do
-      pty = PTY.spawn("sh", ["-c", "read input; echo \"Got: $input\""])
-      pty.send_line("test expect")
-      result = pty.expect("Got: test expect")
-      result.should_not be_nil
-      pty.close
+  it "matches a regex pattern" do
+    pty    = PTY.spawn("echo", ["hello 123 world"])
+    exp    = PTY::Expect.new(pty)
+    result = exp.expect(/123/)
+    result.should eq("hello 123")
+    pty.close
+  end
+
+  it "matches using a custom block-based state machine" do
+    pty    = PTY.spawn("echo", ["hello custom FSM block"])
+    exp    = PTY::Expect.new(pty)
+    target = "custom".to_slice
+    result = exp.expect(1.second) do |slice|
+      slice.size >= target.size && slice[slice.size - target.size, target.size] == target
     end
+    result.should eq("hello custom")
+    pty.close
+  end
+
+  it "returns nil on EOF if pattern is not found" do
+    pty    = PTY.spawn("echo", ["hello world"])
+    exp    = PTY::Expect.new(pty)
+    result = exp.expect("missing")
+    result.should be_nil
+    pty.close
+  end
+
+  it "raises ExpectTimeoutError on timeout and provides partial buffer" do
+    pty = PTY.spawn("sh", ["-c", "echo 'starting'; sleep 2; echo 'ending'"])
+    exp = PTY::Expect.new(pty)
+    expect_raises(PTY::ExpectTimeoutError, "Timeout waiting for pattern") do
+      begin
+        exp.expect("ending", 0.5.seconds)
+      rescue ex : PTY::ExpectTimeoutError
+        ex.buffer.should contain("starting")
+        raise ex
+      end
+    end
+    pty.close
+  end
+
+  it "raises ExpectTimeoutError with correct message for block-based expects" do
+    pty = PTY.spawn("sh", ["-c", "echo start; sleep 2"])
+    exp = PTY::Expect.new(pty)
+    expect_raises(PTY::ExpectTimeoutError, "Timeout waiting for custom block") do
+      exp.expect(0.3.seconds) { false }
+    end
+    pty.kill
+    pty.wait
+    pty.close
+  end
+
+  it "matches a pattern after a large preamble" do
+    pty    = PTY.spawn("sh", ["-c", "printf '%5000s' ''; echo MARKER"])
+    exp    = PTY::Expect.new(pty)
+    result = exp.expect("MARKER")
+    result.should_not be_nil
+    result.not_nil!.bytesize.should be > 5000
+    result.not_nil!.ends_with?("MARKER").should be_true
+    pty.wait
+    pty.close
+  end
+
+  it "matches a pattern containing multibyte characters" do
+    pty    = PTY.spawn("echo", ["une café noire"])
+    exp    = PTY::Expect.new(pty)
+    result = exp.expect("café")
+    result.should eq("une café")
+    pty.close
+  end
+
+  it "matches a single-character pattern" do
+    pty    = PTY.spawn("echo", ["abc"])
+    exp    = PTY::Expect.new(pty)
+    result = exp.expect("b")
+    result.should eq("ab")
+    pty.close
+  end
+
+  it "does not match a pattern longer than the available output" do
+    pty    = PTY.spawn("echo", ["hi"])
+    exp    = PTY::Expect.new(pty)
+    result = exp.expect("hi there friend")
+    result.should be_nil
+    pty.close
+  end
+
+  it "stops at the earliest regex match" do
+    pty    = PTY.spawn("echo", ["aXbXc"])
+    exp    = PTY::Expect.new(pty)
+    result = exp.expect(/X/)
+    result.should eq("aX")
+    pty.close
+  end
+
+  it "matches an anchored regex without consuming trailing output" do
+    pty    = PTY.spawn("echo", ["prefix-42-suffix"])
+    exp    = PTY::Expect.new(pty)
+    result = exp.expect(/\d\d/)
+    result.should eq("prefix-42")
+    pty.close
+  end
+
+  it "restores the original read timeout after matching" do
+    pty = PTY.spawn("echo", ["hello world"])
+    exp = PTY::Expect.new(pty)
+    pty.read_timeout = 30.seconds
+    exp.expect("hello", 5.seconds)
+    pty.read_timeout.should eq(30.seconds)
+    pty.close
+  end
+
+  it "restores the original read timeout after a timeout" do
+    pty = PTY.spawn("sh", ["-c", "echo start; sleep 2"])
+    exp = PTY::Expect.new(pty)
+    pty.read_timeout = 30.seconds
+    expect_raises(PTY::ExpectTimeoutError) do
+      exp.expect("never", 0.3.seconds)
+    end
+    pty.read_timeout.should eq(30.seconds)
+    pty.kill
+    pty.wait
+    pty.close
+  end
+
+  it "sends a line with a newline via #send_line" do
+    pty = PTY.spawn("sh", ["-c", "read input; echo \"Got: $input\""])
+    exp = PTY::Expect.new(pty)
+    exp.send_line("test expect")
+    result = exp.expect("Got: test expect")
+    result.should_not be_nil
+    pty.close
   end
 end
 
@@ -345,11 +358,12 @@ private def with_intercept(command, args = nil, *, feed : String? = nil, eof : B
   in_r, in_w = IO.pipe
   out_r, out_w = IO.pipe
   pty      = PTY.spawn(command, args)
+  proxy    = PTY::Proxy.new(pty, input: in_r, output: out_w)
   captured = ""
   spawn { captured = out_r.gets_to_end }
   status = nil
   spawn do
-    status = pty.intercept(input: in_r, output: out_w, raw: false, forward_winch: false)
+    status = proxy.intercept(raw: false, forward_winch: false)
     out_w.close
   end
   if feed
@@ -369,12 +383,13 @@ end
 private def intercept_within(span : Time::Span, command, args = nil, &) : Process::Status?
   in_r, in_w = IO.pipe
   out_r, out_w = IO.pipe
-  pty  = PTY.spawn(command, args)
-  done = Channel(Process::Status).new(1)
+  pty   = PTY.spawn(command, args)
+  proxy = PTY::Proxy.new(pty, input: in_r, output: out_w)
+  done  = Channel(Process::Status).new(1)
 
   spawn { out_r.gets_to_end }
   spawn do
-    done.send(pty.intercept(input: in_r, output: out_w, raw: false, forward_winch: false))
+    done.send(proxy.intercept(raw: false, forward_winch: false))
   end
 
   yield in_w
@@ -394,7 +409,7 @@ private def intercept_within(span : Time::Span, command, args = nil, &) : Proces
   status
 end
 
-describe "PTY::Session#intercept" do
+describe PTY::Proxy do
   it "passes through unchanged" do
     with_intercept("echo", ["passthrough"]) do |captured, status|
       captured.strip.should eq("passthrough")
@@ -424,13 +439,12 @@ describe "PTY::Session#intercept" do
     status.should_not be_nil
     status.not_nil!.success?.should be_true
   end
-end
 
-describe "PTY::Session#pump" do
-  it "captures child output into an in-memory IO" do
+  it "captures child output into an in-memory IO with pump" do
     buffer = IO::Memory.new
     pty    = PTY.spawn("printf", ["a\\nb\\nc\\n"])
-    status = pty.pump(output: buffer)
+    proxy  = PTY::Proxy.new(pty, output: buffer)
+    status = proxy.pump
     pty.close
     buffer.to_s.should contain("a")
     buffer.to_s.should contain("c")
@@ -441,11 +455,12 @@ describe "PTY::Session#pump" do
     source = IO::Memory.new("hello from memory\n")
     sink   = IO::Memory.new
     pty    = PTY.spawn("cat")
+    proxy  = PTY::Proxy.new(pty, input: source, output: sink)
     spawn do
       sleep 0.2.seconds
       pty.send_eof
     end
-    pty.pump(input: source, output: sink)
+    proxy.pump
     pty.close
     sink.to_s.should contain("hello from memory")
   end
@@ -453,7 +468,8 @@ describe "PTY::Session#pump" do
   it "returns the child's exit status" do
     buffer = IO::Memory.new
     pty    = PTY.spawn("sh", ["-c", "exit 3"])
-    status = pty.pump(output: buffer)
+    proxy  = PTY::Proxy.new(pty, output: buffer)
+    status = proxy.pump
     pty.close
     status.exit_code.should eq(3)
   end

@@ -4,12 +4,14 @@ require "../src/pty"
 puts "== Custom State Machine (FSM) Example =="
 
 PTY.run("sh", ["-c", "echo 'booting...'; sleep 1; echo '{\"status\": \"ready\", \"metadata\": \"{}\"}'; echo 'trailing data'"]) do |pty|
+  exp = PTY::Expect.new(pty)
+
   open_braces = 0
   in_string   = false
   escape      = false
   started     = false
 
-  output = pty.expect(5.seconds) do |slice|
+  output = exp.expect(5.seconds) do |slice|
     char = slice.last.chr
 
     if in_string

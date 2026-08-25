@@ -1,9 +1,11 @@
 # src/pty/pool.cr
 require "./session"
+require "./expect"
 
 module PTY
   class Pool
     getter sessions = {} of String => Session
+    getter expects  = {} of String => Expect
 
     def spawn(name : String, command : String, args : Enumerable(String)? = nil,
               env : Process::Env = nil, clear_env : Bool = false,
@@ -18,21 +20,22 @@ module PTY
         xpixel: xpixel, ypixel: ypixel
       )
       @sessions[name] = session
+      @expects[name] = Expect.new(session)
       session
     end
 
     def broadcast(line : String) : Nil
-      @sessions.each_value &.send_line(line)
+      @expects.each_value &.send_line(line)
     end
 
     def expect_all(pattern : String | Regex, timeout : Time::Span? = nil) : Hash(String, String?)
       results = {} of String => String?
       channel = Channel({String, String?}).new
 
-      @sessions.each do |name, session|
+      @expects.each do |name, exp|
         ::spawn do
           begin
-            channel.send({name, session.expect(pattern, timeout)})
+            channel.send({name, exp.expect(pattern, timeout)})
           rescue IO::TimeoutError
             channel.send({name, nil})
           rescue IO::Error
@@ -53,10 +56,10 @@ module PTY
       results = {} of String => String?
       channel = Channel({String, String?}).new
 
-      @sessions.each do |name, session|
+      @expects.each do |name, exp|
         ::spawn do
           begin
-            channel.send({name, session.expect(timeout, &block)})
+            channel.send({name, exp.expect(timeout, &block)})
           rescue IO::TimeoutError
             channel.send({name, nil})
           rescue IO::Error
@@ -86,6 +89,7 @@ module PTY
         session.close unless session.closed?
       end
       @sessions.clear
+      @expects.clear
     end
   end
 end
