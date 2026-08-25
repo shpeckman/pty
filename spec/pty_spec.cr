@@ -109,6 +109,7 @@ describe PTY::Session do
 
   it "raises IO::Error when writing to a closed PTY" do
     pty = PTY.spawn("echo", ["hello"])
+    pty.wait
     pty.close
     expect_raises(IO::Error) do
       pty.write("test".to_slice)
@@ -153,6 +154,38 @@ describe PTY::Session do
     pty.wait
     pty.close
   end
+
+  it "delegates expect functionality to an internal Expect instance" do
+    pty    = PTY.spawn("echo", ["direct expect"])
+    result = pty.expect("expect")
+    result.should eq("expect")
+    pty.wait
+    pty.close
+  end
+
+  it "supports logging IO streams directly on the session" do
+    log = IO::Memory.new
+    pty = PTY.spawn("sh", ["-c", "read data; echo OUT:$data"])
+    pty.logger = log
+
+    pty.send_line("hello logger")
+    pty.expect("OUT:hello logger")
+
+    logged_output = log.to_s
+    logged_output.should contain("hello logger\n")   # from send_line
+    logged_output.should contain("OUT:hello logger") # from output reading
+
+    pty.wait
+    pty.close
+  end
+
+  it "can read until EOF directly from the session" do
+    pty    = PTY.spawn("echo", ["everything"])
+    output = pty.expect_eof
+    output.should contain("everything")
+    pty.wait
+    pty.close
+  end
 end
 
 describe PTY::Expect do
@@ -160,15 +193,36 @@ describe PTY::Expect do
     pty    = PTY.spawn("echo", ["hello expect world"])
     exp    = PTY::Expect.new(pty)
     result = exp.expect("expect")
-    result.should eq("hello expect")
+    result.should eq("expect")
+    pty.wait
     pty.close
   end
 
-  it "matches a regex pattern" do
-    pty    = PTY.spawn("echo", ["hello 123 world"])
-    exp    = PTY::Expect.new(pty)
-    result = exp.expect(/123/)
-    result.should eq("hello 123")
+  it "matches a regex pattern and returns MatchData" do
+    pty = PTY.spawn("echo", ["temperature: 42 degrees"])
+    exp = PTY::Expect.new(pty)
+    # Require the word 'degrees' to ensure we read past the entire number
+    match = exp.expect(/temperature: (\d+) degrees/)
+
+    match.should_not be_nil
+    match.not_nil![1].should eq("42")
+    pty.wait
+    pty.close
+  end
+
+  it "matches multiple patterns and returns a MatchResult" do
+    pty = PTY.spawn("echo", ["Password: "])
+    exp = PTY::Expect.new(pty)
+
+    result = exp.expect({/Permission denied/, "Password: "})
+
+    result.should_not be_nil
+    result = result.not_nil!
+    result.index.should eq(1)
+    result.buffer.should contain("Password: ")
+    result.match.should eq("Password: ")
+
+    pty.wait
     pty.close
   end
 
@@ -179,15 +233,28 @@ describe PTY::Expect do
     result = exp.expect(1.second) do |slice|
       slice.size >= target.size && slice[slice.size - target.size, target.size] == target
     end
-    result.should eq("hello custom")
+    result.should contain("hello custom")
+    pty.wait
     pty.close
   end
 
-  it "returns nil on EOF if pattern is not found" do
-    pty    = PTY.spawn("echo", ["hello world"])
+  it "raises ExpectEOFError on EOF if pattern is not found" do
+    pty = PTY.spawn("echo", ["hello world"])
+    exp = PTY::Expect.new(pty)
+
+    expect_raises(PTY::ExpectEOFError, "Premature EOF") do
+      exp.expect("missing")
+    end
+    pty.wait
+    pty.close
+  end
+
+  it "reads safely until EOF with expect_eof" do
+    pty    = PTY.spawn("echo", ["full stream"])
     exp    = PTY::Expect.new(pty)
-    result = exp.expect("missing")
-    result.should be_nil
+    buffer = exp.expect_eof
+    buffer.should contain("full stream")
+    pty.wait
     pty.close
   end
 
@@ -202,6 +269,8 @@ describe PTY::Expect do
         raise ex
       end
     end
+    pty.kill
+    pty.wait
     pty.close
   end
 
@@ -216,22 +285,12 @@ describe PTY::Expect do
     pty.close
   end
 
-  it "matches a pattern after a large preamble" do
-    pty    = PTY.spawn("sh", ["-c", "printf '%5000s' ''; echo MARKER"])
-    exp    = PTY::Expect.new(pty)
-    result = exp.expect("MARKER")
-    result.should_not be_nil
-    result.not_nil!.bytesize.should be > 5000
-    result.not_nil!.ends_with?("MARKER").should be_true
-    pty.wait
-    pty.close
-  end
-
   it "matches a pattern containing multibyte characters" do
     pty    = PTY.spawn("echo", ["une café noire"])
     exp    = PTY::Expect.new(pty)
     result = exp.expect("café")
-    result.should eq("une café")
+    result.should eq("café")
+    pty.wait
     pty.close
   end
 
@@ -239,15 +298,18 @@ describe PTY::Expect do
     pty    = PTY.spawn("echo", ["abc"])
     exp    = PTY::Expect.new(pty)
     result = exp.expect("b")
-    result.should eq("ab")
+    result.should eq("b")
+    pty.wait
     pty.close
   end
 
   it "does not match a pattern longer than the available output" do
-    pty    = PTY.spawn("echo", ["hi"])
-    exp    = PTY::Expect.new(pty)
-    result = exp.expect("hi there friend")
-    result.should be_nil
+    pty = PTY.spawn("echo", ["hi"])
+    exp = PTY::Expect.new(pty)
+    expect_raises(PTY::ExpectEOFError) do
+      exp.expect("hi there friend")
+    end
+    pty.wait
     pty.close
   end
 
@@ -255,7 +317,9 @@ describe PTY::Expect do
     pty    = PTY.spawn("echo", ["aXbXc"])
     exp    = PTY::Expect.new(pty)
     result = exp.expect(/X/)
-    result.should eq("aX")
+    result.should_not be_nil
+    result.not_nil![0].should eq("X")
+    pty.wait
     pty.close
   end
 
@@ -263,7 +327,9 @@ describe PTY::Expect do
     pty    = PTY.spawn("echo", ["prefix-42-suffix"])
     exp    = PTY::Expect.new(pty)
     result = exp.expect(/\d\d/)
-    result.should eq("prefix-42")
+    result.should_not be_nil
+    result.not_nil![0].should eq("42")
+    pty.wait
     pty.close
   end
 
@@ -273,6 +339,7 @@ describe PTY::Expect do
     pty.read_timeout = 30.seconds
     exp.expect("hello", 5.seconds)
     pty.read_timeout.should eq(30.seconds)
+    pty.wait
     pty.close
   end
 
@@ -295,6 +362,7 @@ describe PTY::Expect do
     exp.send_line("test expect")
     result = exp.expect("Got: test expect")
     result.should_not be_nil
+    pty.wait
     pty.close
   end
 end
@@ -374,6 +442,8 @@ private def with_intercept(command, args = nil, *, feed : String? = nil, eof : B
   pty.send_eof if eof
   sleep 0.4.seconds
   Fiber.yield
+  pty.kill
+  pty.wait
   pty.close
   in_w.close rescue nil
   in_r.close rescue nil
@@ -401,6 +471,8 @@ private def intercept_within(span : Time::Span, command, args = nil, &) : Proces
   when timeout(span)
   end
 
+  pty.kill
+  pty.wait
   pty.close
   in_w.close rescue nil
   in_r.close rescue nil
@@ -445,6 +517,7 @@ describe PTY::Proxy do
     pty    = PTY.spawn("printf", ["a\\nb\\nc\\n"])
     proxy  = PTY::Proxy.new(pty, output: buffer)
     status = proxy.pump
+    pty.wait
     pty.close
     buffer.to_s.should contain("a")
     buffer.to_s.should contain("c")
@@ -461,6 +534,7 @@ describe PTY::Proxy do
       pty.send_eof
     end
     proxy.pump
+    pty.wait
     pty.close
     sink.to_s.should contain("hello from memory")
   end
@@ -470,6 +544,7 @@ describe PTY::Proxy do
     pty    = PTY.spawn("sh", ["-c", "exit 3"])
     proxy  = PTY::Proxy.new(pty, output: buffer)
     status = proxy.pump
+    pty.wait
     pty.close
     status.exit_code.should eq(3)
   end

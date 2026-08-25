@@ -1,6 +1,6 @@
 # shard.yml
 name: pty
-version: 0.6.0
+version: 0.8.0
 
 authors:
   - shpeckman <geelenrobin@proton.me>
@@ -8,3 +8,4 @@ authors:
 crystal: '>= 1.21.0'
 
 license: MIT
+

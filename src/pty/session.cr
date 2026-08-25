@@ -6,23 +6,40 @@ class PTY::Session < IO::FileDescriptor
   getter process : Process
 
   @status : Process::Status?
+  @expect : Expect?
 
   def self.new(command : String, args : Enumerable(String)? = nil,
                env : Process::Env = nil, clear_env : Bool = false,
                shell : Bool = false, chdir : Path | String? = nil,
-               cols : Int32 = 80, rows : Int32 = 24,
+               cols : Int32? = nil, rows : Int32? = nil,
                xpixel : Int32 = 0, ypixel : Int32 = 0) : Session
     if shell
       args    = ["-c", command]
       command = "/bin/sh"
     end
 
+    c = cols
+    r = rows
+
+    if c.nil? || r.nil?
+      if STDOUT.tty?
+        begin
+          host_ws = PTY.window_size(STDOUT)
+          c       = host_ws.cols if c.nil?
+          r       = host_ws.rows if r.nil?
+        rescue IO::Error
+        end
+      end
+      c ||= 80
+      r ||= 24
+    end
+
     master_fd = uninitialized LibC::Int
     slave_fd = uninitialized LibC::Int
 
     ws = LibC::Winsize.new
-    ws.ws_col = cols.to_u16
-    ws.ws_row = rows.to_u16
+    ws.ws_col = c.to_u16
+    ws.ws_row = r.to_u16
     ws.ws_xpixel = xpixel.to_u16
     ws.ws_ypixel = ypixel.to_u16
 
@@ -66,6 +83,46 @@ class PTY::Session < IO::FileDescriptor
   end
 
   delegate pid, terminated?, exists?, signal, to: @process
+
+  private def expect_instance : Expect
+    @expect ||= Expect.new(self)
+  end
+
+  def logger=(logger : IO?) : Nil
+    expect_instance.logger = logger
+  end
+
+  def logger : IO?
+    expect_instance.logger
+  end
+
+  def send_line(line : String) : Nil
+    expect_instance.send_line(line)
+  end
+
+  def expect(pattern : String, timeout : Time::Span? = nil) : String?
+    expect_instance.expect(pattern, timeout)
+  end
+
+  def expect(pattern : Regex, timeout : Time::Span? = nil) : Regex::MatchData?
+    expect_instance.expect(pattern, timeout)
+  end
+
+  def expect(patterns : Tuple, timeout : Time::Span? = nil) : MatchResult?
+    expect_instance.expect(patterns, timeout)
+  end
+
+  def expect(patterns : Enumerable(String | Regex), timeout : Time::Span? = nil) : MatchResult?
+    expect_instance.expect(patterns, timeout)
+  end
+
+  def expect(timeout : Time::Span? = nil, &block : Bytes -> Bool) : String?
+    expect_instance.expect(timeout, &block)
+  end
+
+  def expect_eof(timeout : Time::Span? = nil) : String
+    expect_instance.expect_eof(timeout)
+  end
 
   def resize(size : WinSize) : Nil
     resize(size.cols, size.rows, size.xpixel, size.ypixel)
@@ -129,6 +186,8 @@ class PTY::Session < IO::FileDescriptor
       kill
       wait
     end
+    # Break the circular reference for the GC
+    @expect = nil
   end
 
   private def unbuffered_read(slice : Bytes) : Int32

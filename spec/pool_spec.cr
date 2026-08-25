@@ -23,9 +23,9 @@ describe PTY::Pool do
 
     results = pool.expect_all(/out\d:test_broadcast/)
     results["n1"].should_not be_nil
-    results["n1"].not_nil!.should contain("out1:test_broadcast")
+    results["n1"].not_nil![0].should eq("out1:test_broadcast")
     results["n2"].should_not be_nil
-    results["n2"].not_nil!.should contain("out2:test_broadcast")
+    results["n2"].not_nil![0].should eq("out2:test_broadcast")
 
     pool.wait_all
     pool.close_all
@@ -95,5 +95,35 @@ describe PTY::Pool do
     pool.close_all
 
     pool.sessions.should be_empty
+  end
+
+  it "filters operations by tags" do
+    pool = PTY::Pool.new
+    pool.spawn("web1", "echo", ["hello from web"], tags: [:web])
+    pool.spawn("web2", "echo", ["hello from web"], tags: [:web])
+    pool.spawn("db1", "echo", ["hello from db"], tags: [:db])
+
+    results = pool.expect_all("hello from web", tag: :web)
+    results.size.should eq(2)
+    results.has_key?("web1").should be_true
+    results.has_key?("web2").should be_true
+    results.has_key?("db1").should be_false
+
+    pool.wait_all
+    pool.close_all
+  end
+
+  it "returns MatchResult when expecting an array of patterns across the pool" do
+    pool = PTY::Pool.new
+    pool.spawn("n1", "echo", ["apple"])
+    pool.spawn("n2", "echo", ["banana"])
+
+    results = pool.expect_all({/cherry/, "apple", "banana"})
+
+    results["n1"].not_nil!.index.should eq(1)
+    results["n2"].not_nil!.index.should eq(2)
+
+    pool.wait_all
+    pool.close_all
   end
 end

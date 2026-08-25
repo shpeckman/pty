@@ -11,7 +11,7 @@ module PTY
   def self.spawn(command : String, args : Enumerable(String)? = nil,
                  env : Process::Env = nil, clear_env : Bool = false,
                  shell : Bool = false, chdir : Path | String? = nil,
-                 cols : Int32 = 80, rows : Int32 = 24,
+                 cols : Int32? = nil, rows : Int32? = nil,
                  xpixel : Int32 = 0, ypixel : Int32 = 0) : Session
     Session.new(command, args, env: env, clear_env: clear_env,
       shell: shell, chdir: chdir, cols: cols, rows: rows,
@@ -21,7 +21,7 @@ module PTY
   def self.run(command : String, args : Enumerable(String)? = nil,
                env : Process::Env = nil, clear_env : Bool = false,
                shell : Bool = false, chdir : Path | String? = nil,
-               cols : Int32 = 80, rows : Int32 = 24,
+               cols : Int32? = nil, rows : Int32? = nil,
                xpixel : Int32 = 0, ypixel : Int32 = 0, &)
     session = PTY.spawn(command, args, env: env, clear_env: clear_env,
       shell: shell, chdir: chdir, cols: cols, rows: rows,
