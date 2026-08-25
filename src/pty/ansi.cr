@@ -11,9 +11,7 @@ module PTY::ANSI
   end
 
   struct CSI < Token
-    getter parameters   : Array(Int32?)
-    getter intermediate : String
-    getter final_char   : Char
+    getter parameters : Array(Int32?), intermediate : String, final_char : Char
 
     def initialize(@parameters : Array(Int32?), @intermediate : String, @final_char : Char)
     end
@@ -27,16 +25,14 @@ module PTY::ANSI
   end
 
   struct StringSequence < Token
-    getter kind    : Char
-    getter payload : String
+    getter kind : Char, payload : String
 
     def initialize(@kind : Char, @payload : String)
     end
   end
 
   struct Escape < Token
-    getter intermediate : String
-    getter final_char   : Char
+    getter intermediate : String, final_char : Char
 
     def initialize(@intermediate : String, @final_char : Char)
     end
