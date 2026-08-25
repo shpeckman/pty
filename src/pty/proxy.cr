@@ -1,6 +1,7 @@
 # src/pty/proxy.cr
 require "./session"
 require "./winch"
+require "./tty"
 
 module PTY
   class Proxy

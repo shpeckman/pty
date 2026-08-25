@@ -3,65 +3,6 @@ require "./lib_c"
 require "./win_size"
 
 module PTY
-  def self.window_size(io : IO::FileDescriptor) : WinSize
-    window_size(io.fd)
-  end
-
-  def self.window_size(fd : Int32) : WinSize
-    ws = LibC::Winsize.new
-    if LibC.ioctl(fd, LibC::TIOCGWINSZ, pointerof(ws)) != 0
-      raise IO::Error.from_errno("ioctl(TIOCGWINSZ)")
-    end
-    WinSize.new(ws.ws_col.to_i, ws.ws_row.to_i,
-      ws.ws_xpixel.to_i, ws.ws_ypixel.to_i)
-  end
-
-  def self.raw(io : IO::FileDescriptor = STDIN, & : -> T) : T forall T
-    if LibC.tcgetattr(io.fd, out saved) != 0
-      raise IO::Error.from_errno("tcgetattr") unless Errno.value == Errno::ENOTTY
-      return yield
-    end
-
-    raw = saved
-    LibC.cfmakeraw(pointerof(raw))
-    if LibC.tcsetattr(io.fd, LibC::TCSANOW, pointerof(raw)) != 0
-      raise IO::Error.from_errno("tcsetattr")
-    end
-
-    begin
-      yield
-    ensure
-      LibC.tcsetattr(io.fd, LibC::TCSAFLUSH, pointerof(saved))
-    end
-  end
-
-  def self.spawn(command : String, args : Enumerable(String)? = nil,
-                 env : Process::Env = nil, clear_env : Bool = false,
-                 shell : Bool = false, chdir : Path | String? = nil,
-                 cols : Int32 = 80, rows : Int32 = 24,
-                 xpixel : Int32 = 0, ypixel : Int32 = 0) : Session
-    Session.new(command, args, env: env, clear_env: clear_env,
-      shell: shell, chdir: chdir, cols: cols, rows: rows,
-      xpixel: xpixel, ypixel: ypixel)
-  end
-
-  def self.run(command : String, args : Enumerable(String)? = nil,
-               env : Process::Env = nil, clear_env : Bool = false,
-               shell : Bool = false, chdir : Path | String? = nil,
-               cols : Int32 = 80, rows : Int32 = 24,
-               xpixel : Int32 = 0, ypixel : Int32 = 0, &)
-    session = PTY.spawn(command, args, env: env, clear_env: clear_env,
-      shell: shell, chdir: chdir, cols: cols, rows: rows,
-      xpixel: xpixel, ypixel: ypixel)
-    begin
-      yield session
-    ensure
-      session.kill
-      session.wait
-      session.close
-    end
-  end
-
   class Session < IO::FileDescriptor
     getter process : Process
 
